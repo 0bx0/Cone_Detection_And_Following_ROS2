@@ -31,7 +31,7 @@ CONFIG = {
     'min_turn_speed':      0.15,   
 
     # --- DISTANCES ---
-    'stop_distance':       2.2,    # UPDATED: Stops exactly at 2.2m
+    'stop_distance':       1.2,    # UPDATED: Stops exactly at 2.2m
     'max_detection_dist':  50.0,   
     
     # --- 180 TURN CONFIG ---
@@ -75,7 +75,7 @@ class ConeFollowerNode(Node):
         self.compass_topic = self.get_parameter('compass_topic').value
         self.cmd_vel_topic = self.get_parameter('cmd_vel_topic').value
         self.fallback_width = self.get_parameter('fallback_image_width').value
-        self.image_center_x = self.fallback_width / 2.0
+        self.image_center_x = self.fallback_width / 4.0
         self.camera_info_received = False
 
         # Load Params
@@ -206,7 +206,7 @@ class ConeFollowerNode(Node):
     # =========================================================================================
     def camera_info_cb(self, msg: CameraInfo):
         if not self.camera_info_received:
-            self.image_center_x = msg.width / 2.0
+            self.image_center_x = msg.width / 4.0
             self.camera_info_received = True
             self.get_logger().info(f" ✅ Camera Info Received. Width: {msg.width} (Center: {self.image_center_x})")
 
@@ -341,7 +341,7 @@ class ConeFollowerNode(Node):
         
         # BLIND_PHASE: We are Turning or Backing up. 
         # IGNORE CAMERA. DO NOT RESET. DO NOT SEARCH.
-        BLIND_PHASE = ['PRE_TURN_SETTLE', 'TURN_AROUND', 'POST_TURN_SETTLE', 'BACK_UP', 'CATCHBOX', 'MISSION_COMPLETE', 'RETRY_BACKOFF']
+        BLIND_PHASE = ['TURN_AROUND', 'POST_TURN_SETTLE', 'BACK_UP', 'CATCHBOX', 'MISSION_COMPLETE', 'RETRY_BACKOFF']
 
         # --- SAFETY: COMPLETE STOP ---
         if self.state == 'MISSION_COMPLETE':
@@ -411,7 +411,11 @@ class ConeFollowerNode(Node):
             if not self.last_detection: return
             err = self.image_center_x - self.last_detection.cx
             if abs(err) < self.final_tol:
-                self.set_state('PRE_TURN_SETTLE', reason='Perfectly Aligned')
+                # Calculate target heading before transitioning
+                if self.current_heading is not None:
+                    self.target_heading = self.normalize_heading(self.current_heading + 180.0)
+                    self.get_logger().info(f"Targeting {self.target_heading:.1f} (Current: {self.current_heading:.1f})")
+                self.set_state('TURN_AROUND', reason='Perfectly Aligned, Starting 180')
                 return
             rot = self.get_steering_cmd(err * 0.5, use_integral=False)
             rot = max(-0.1, min(0.1, rot)) 
@@ -421,24 +425,15 @@ class ConeFollowerNode(Node):
         #  BLIND PHASE: 180 Turn & Backup (Camera ignored here)
         # ========================================================
 
-        elif self.state == 'PRE_TURN_SETTLE':
-            self.send_cmd(0.0, 0.0)
-            elapsed = (now - self.state_start_time).nanoseconds / 1e9
-            if self.current_heading is None:
-                self.get_logger().warn('WAITING FOR COMPASS...', throttle_duration_sec=1.0)
-                return
-            if elapsed >= self.settle_time:
-                self.target_heading = self.normalize_heading(self.current_heading + 180.0)
-                self.get_logger().info(f"Targeting {self.target_heading:.1f} (Current: {self.current_heading:.1f})")
-                self.set_state('TURN_AROUND', reason='Starting 180')
-
         elif self.state == 'TURN_AROUND':
-            if self.current_heading is None:
+            # Safety check - need compass data for turn
+            if self.current_heading is None or self.target_heading is None:
+                self.get_logger().warn('WAITING FOR COMPASS...', throttle_duration_sec=1.0)
                 self.send_cmd(0.0, 0.0)
                 return
             
-            elapsed = (now - self.state_start_time).nanoseconds / 1e9
-            
+            #logging the compass heading
+            self.get_logger().info(f"🧭 TURNING | Current Heading: {self.current_heading:.1f} | Target Heading: {self.target_heading:.1f}")
             # TIMEOUT HANDLING
             # if elapsed > self.turn_timeout:
             #     self.get_logger().error("TURN FAILED (TIMEOUT). RETRYING...")
