@@ -1,0 +1,13 @@
+# Goal - what the action client sends
+string color
+string type
+
+---
+# Result - final outcome
+bool success
+string message
+
+---
+# Feedback - progress updates during execution
+float32 distance_to_cone
+string status

@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import Image
+from std_msgs.msg import String
+from cv_bridge import CvBridge
+from ultralytics import YOLO
+import cv2, numpy as np, os, json
+
+def hsv_to_color_name(h, s, v):
+    if v < 40: return "Black"
+    if s < 30 and v > 200: return "White"
+    if s < 30 and 40 <= v <= 200: return "Gray"
+    if (h <= 10) or (h >= 170): return "Red"
+    if 10 < h <= 25: return "Orange"
+    if 25 < h <= 35: return "Yellow"
+    if 35 < h <= 85: return "Green"
+    if 85 < h <= 130: return "Blue"
+    if 130 < h < 170: return "Magenta"
+    return "Unknown"
+
+def class_color_palette(n):
+    colors = []
+    for i in range(max(1, n)):
+        hue = int(179 * (i / max(1, n)))
+        col = cv2.cvtColor(np.uint8([[[hue, 220, 255]]]), cv2.COLOR_HSV2BGR)[0, 0]
+        colors.append((int(col[0]), int(col[1]), int(col[2])))
+    return colors
+
+def draw_triangle_bbox(img, x1, y1, x2, y2, color):
+    cx, cy = (x1 + x2)//2, (y1 + y2)//2
+    top, left, right = (cx, y1), (x1, y2), (x2, y2)
+    pts = np.array([top, left, right], dtype=np.int32)
+    cv2.polylines(img, [pts], True, color, 2, cv2.LINE_AA)
+    for pt in [top, left, right]:
+        cv2.circle(img, pt, 3, color, -1, cv2.LINE_AA)
+
+class ConeDetector(Node):
+    def __init__(self):
+        super().__init__('cone_detector')
+
+        self.declare_parameter('camera_topic', '/zed/zed_node/left/image_rect_color')
+        self.declare_parameter('model_path',  '/home/kratos/ros2_ws/src/cone_detector/cone_detector/models/best.pt')
+        self.declare_parameter('confidence', 0.25)
+        self.declare_parameter('annotated_topic', '/cone_detector/annotated')
+        self.declare_parameter('detection_topic', '/cone_detector/detections')
+
+        self.bridge = CvBridge()
+        self.model_path = os.path.expanduser(self.get_parameter('model_path').get_parameter_value().string_value)
+        self.conf = float(self.get_parameter('confidence').value)
+
+        self.sub = self.create_subscription(Image,
+                                            self.get_parameter('camera_topic').value,
+                                            self.image_callback,
+                                            10)
+        self.pub_img = self.create_publisher(Image, self.get_parameter('annotated_topic').value, 10)
+        self.pub_det = self.create_publisher(String, self.get_parameter('detection_topic').value, 10)
+
+        self.get_logger().info(f"Loading YOLO model: {self.model_path}")
+        self.model = YOLO(self.model_path)
+        self.names = getattr(self.model, "names", {})
+        self.palette = class_color_palette(len(self.names))
+
+        self.get_logger().info("ConeDetector node initialized and listening for ZED images.")
+
+    def image_callback(self, msg):
+        try:
+            frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
+        except Exception as e:
+            self.get_logger().error(f"cv_bridge error: {e}")
+            return
+
+        results = self.model(frame, conf=self.conf, verbose=False)
+        detections = []
+        annotated = frame.copy()
+
+        for result in results:
+            boxes = getattr(result, "boxes", None)
+            if boxes is None:
+                continue
+
+            xyxy = boxes.xyxy.cpu().numpy() if hasattr(boxes.xyxy, "cpu") else np.array(boxes.xyxy)
+            confs = boxes.conf.cpu().numpy() if hasattr(boxes.conf, "cpu") else np.array(boxes.conf)
+            clss = boxes.cls.cpu().numpy() if hasattr(boxes.cls, "cpu") else np.array(boxes.cls)
+
+            for (x1, y1, x2, y2), conf, cls in zip(xyxy, confs, clss):
+                x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
+                cx, cy = (x1 + x2)//2, (y1 + y2)//2
+                cls = int(cls)
+                cls_name = self.names.get(cls, f"cls_{cls}")
+
+                base_color = self.palette[cls % len(self.palette)]
+                draw_triangle_bbox(annotated, x1, y1, x2, y2, base_color)
+
+                patch = annotated[max(0, cy-5):min(frame.shape[0], cy+5), max(0, cx-5):min(frame.shape[1], cx+5)]
+                if patch.size:
+                    avg_bgr = np.mean(patch.reshape(-1, 3), axis=0).astype(np.uint8)
+                    avg_hsv = cv2.cvtColor(np.uint8([[avg_bgr]]), cv2.COLOR_BGR2HSV)[0, 0]
+                    cname = hsv_to_color_name(*avg_hsv)
+                else:
+                    cname = "Unknown"
+
+                cv2.putText(annotated, cname, (x1, y1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
+                detections.append({"class": cls_name, "conf": float(conf), "color": cname})
+
+        # publish annotated image for RViz2
+        try:
+            annotated_msg = self.bridge.cv2_to_imgmsg(annotated, encoding='bgr8')
+            annotated_msg.header = msg.header
+            self.pub_img.publish(annotated_msg)
+        except Exception as e:
+            self.get_logger().error(f"Publishing error: {e}")
+
+        # publish JSON detections
+        self.pub_det.publish(String(data=json.dumps(detections)))
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = ConeDetector()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()
