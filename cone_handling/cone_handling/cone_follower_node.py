@@ -19,7 +19,7 @@ from cone_msgs.action import FollowCone
 CONFIG = {
     # --- SPEEDS ---
     'forward_speed':       0.25,   
-    'turn_speed':          0.35,   
+    'turn_speed':          0.80,   
     'backup_speed':       -0.15,   
 
     # --- P-CONTROLLER FOR TURNING ---
@@ -27,8 +27,8 @@ CONFIG = {
     # 180 deg error = 3.6 rad/s (capped at max)
     # 10 deg error = 0.2 rad/s
     'turn_kp':             0.02,   
-    'max_turn_speed':      0.5,    
-    'min_turn_speed':      0.15,   
+    'max_turn_speed':      1.10,    
+    'min_turn_speed':      0.60,   
 
     # --- DISTANCES ---
     'stop_distance':       1.2,    # UPDATED: Stops exactly at 2.2m

@@ -26,7 +26,7 @@ class ConeDetectorNode(Node):
 
         # --- Model Resolution ---
         # USER REQUESTED HARDCODED PATH
-        self.model_path = '/home/d4y0n3/ros2_ws/src/Cone/cone_detector/models/best.pt'
+        self.model_path = '/home/kratos/ros2_ws/src/Cone/cone_detector/models/best.pt'
 
         self.get_logger().info(f"Loading Model: {self.model_path}")
         
