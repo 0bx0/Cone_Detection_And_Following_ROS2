@@ -8,13 +8,13 @@ import cv2
 import os
 from ultralytics import YOLO
 import numpy as np
-
+from ament_index_python.packages import get_package_share_directory
 class ConeDetectorNode(Node):
     def __init__(self):
         super().__init__('cone_detector_node')
         
         # --- Parameters ---
-        self.declare_parameter('image_topic', '/zed/zed_node/left/image_rect_color')
+        self.declare_parameter('image_topic', '/zed/zed_node/rgb/image_rect_color')
         self.declare_parameter('model_path', '') 
         self.declare_parameter('conf_thresh', 0.4)
         self.declare_parameter('debug', True)
@@ -24,12 +24,15 @@ class ConeDetectorNode(Node):
         self.conf_thresh = self.get_parameter('conf_thresh').value
         self.debug = self.get_parameter('debug').value
 
-        # --- Model Resolution ---
-        # USER REQUESTED HARDCODED PATH
-        self.model_path = '/home/kratos/ros2_ws/src/Cone/cone_detector/models/best.pt'
+        try:
+            pkg_share = get_package_share_directory('cone_detector')
+            self.model_path = os.path.join(pkg_share, 'models', 'best.pt')
+        except Exception as e:
+            self.get_logger().error(f"❌ Could not find cone_detector package: {e}")
+            raise e
 
         self.get_logger().info(f"Loading Model: {self.model_path}")
-        
+                
         # Explicit file check to prevent silent failures
         if not os.path.exists(self.model_path):
              self.get_logger().error(f"❌ MODEL FILE NOT FOUND: {self.model_path}")
@@ -57,8 +60,9 @@ class ConeDetectorNode(Node):
         # Color ranges for HSV detection (OpenCV format)
         self.color_ranges = {
             'red': {
-                'lower': [np.array([0, 50, 50]), np.array([10, 255, 255])],
-                'upper': [np.array([170, 50, 50]), np.array([180, 255, 255])]
+                # Red wraps around HSV hue range → two segments
+                'lower': [np.array([0, 50, 50]), np.array([170, 50, 50])],
+                'upper': [np.array([10, 255, 255]), np.array([180, 255, 255])]
             },
             'blue': {
                 'lower': np.array([100, 50, 50]),
@@ -71,8 +75,17 @@ class ConeDetectorNode(Node):
             'orange': {
                 'lower': np.array([10, 100, 100]),
                 'upper': np.array([25, 255, 255])
-            }
+            },
+            'green': {
+                'lower': np.array([35, 50, 50]),
+                'upper': np.array([85, 255, 255])
+            },
+            'cyan': {
+                'lower': np.array([85, 50, 50]),
+                'upper': np.array([100, 255, 255])
+            },
         }
+
         
         # Publishers
         self.pub_annotated = self.create_publisher(Image, 'cone_detector/annotated_image', 10)
@@ -123,11 +136,13 @@ class ConeDetectorNode(Node):
         self.frame_count += 1
         
         try:
-            cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgra8')
         except Exception as e:
             self.get_logger().error(f"CV Bridge conversion failed: {e}")
             return
         
+        cv_image = cv2.cvtColor(cv_image, cv2.COLOR_BGRA2BGR)
+
         # DEBUG: Log raw image stats
         if self.frame_count % 10 == 0:
              self.get_logger().info(f"📷 RX IMAGE | {msg.width}x{msg.height} | Frame: {self.frame_count}")
